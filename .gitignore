@@ -1,0 +1,25 @@
+# 数据集和打包文件
+data/
+!data/.keep
+
+# 模型权重和检查点
+checkpoints/
+*.pth
+*.pt
+
+# Python 缓存
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 虚拟环境 (如果你有的话)
+venv/
+env/
+.env
+
+# IDE 配置文件
+.vscode/
+.idea/
+
+# 系统文件
+.DS_Store
