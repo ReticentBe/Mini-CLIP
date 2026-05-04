@@ -22,7 +22,7 @@ Unlike standard toy projects, this repository focuses on scalable engineering pr
 
 ## Result
 
-**Dataset**: Flickr8k (7000 train / 1000 val)
+**Dataset**: Flickr8k (8091 images total, 5 train shards / 3 val shards, ~5000 train samples and ~500 val samples per epoch via WebDataset resampling)
 
 **Hardware**: 2x RTX 5090 via DDP on AutoDL
 
