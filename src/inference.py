@@ -1,3 +1,12 @@
+"""
+Inference script for image-text retrieval demo
+
+Loads a trained CLIP checkpoint and runs two demos:
+1. In-distribution: Flickr8k image with ground-truth and distractor captions
+2. Out-distribution: Lenna portrait with manually crafted captions
+"""
+
+
 import os
 import torch
 import torch.nn.functional as F
@@ -15,7 +24,7 @@ def predict(image_path, text_candidates, model, token_to_id, device):
     """
     model.eval()
 
-    transform = image_transforms(config.IMAGE_SIZE)
+    transform = image_transforms(config.IMAGE_SIZE, is_train=False)
     image = Image.open(image_path).convert('RGB')
     image_tensor = transform(image).unsqueeze(0).to(device)
 
@@ -52,7 +61,7 @@ def predict(image_path, text_candidates, model, token_to_id, device):
 def main():
     device = config.DEVICE
     if not os.path.exists(config.VOCAB_PATH):
-        print("Vocabulary is not exists")
+        print("Vocabulary file not found")
         return
     else:
         token_to_id = vocab.load_vocab(config.VOCAB_PATH)
@@ -66,16 +75,35 @@ def main():
         print("Can't find best_model.pth")
         return
     
-    test_image_path = os.path.join(config.DATA_PATH, "")
 
-    candidates = [
-        "a dog running on the grass",                             
-        "two men playing football",                               
-        "a black car parked on the street",                       
-        "a little girl going into a wooden building"              
+    print("=" * 50)
+    print("Demo 1: Flickr8k (In-Distribution)")
+    print("=" * 50)
+    flickr_image = os.path.join(config.DATA_PATH, "69189650_6687da7280.jpg")
+    flickr_candidates = [
+        "A brown dog is running through a brown field .",          
+        "A cat sleeping on a couch",           
+        "A dog sitting in the snow",           
+        "A child running on a brown field",        
+        "A dog running through a field",       
     ]
 
-    predict(test_image_path, candidates, model, token_to_id, device)
+    predict(flickr_image, flickr_candidates, model, token_to_id, device)
+
+    print("\n" + "=" * 50)
+    print("Demo 2: Lenna (Out-of-Distribution)")
+    print("=" * 50)
+    lenna_image = os.path.join(config.DATA_PATH, "Lenna.jpg")
+    lenna_candidates = [
+        "A woman wearing a hat with feathers",
+        "A man wearing a hat with feathers", 
+        "A woman without any hat",
+        "A child looking over her shoulder",
+        "A portrait of an elderly woman",
+    ]
+
+    predict(lenna_image, lenna_candidates, model, token_to_id, device)
+
 
 if __name__ == "__main__":
     main()

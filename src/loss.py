@@ -1,3 +1,11 @@
+"""
+Contrastive loss for CLIP with DDP-compatible differentiable gather
+
+GatherLayer implements a custom autograd.Function that preserves gradients
+across distributed all_gather, enabling contrastive learning to use all
+negatives across GPUs
+"""
+
 import torch
 from torch import nn
 import torch.distributed as dist
@@ -6,7 +14,7 @@ class GatherLayer(torch.autograd.Function):
     '''
     A custom PyTorch 'autograd.Function' to implement a differentiable 'all_gather'
     'dist.all_gather' breaks the computation graph and does not backpropagate gradients 
-    across distributed workers. This layer is desiged for gradients to correctly accumulate
+    across distributed workers. This layer is designed for gradients to correctly accumulate
     and route back to the appropriate gpus during distributed contrastive learning
     '''
     @staticmethod
@@ -20,8 +28,8 @@ class GatherLayer(torch.autograd.Function):
     def backward(ctx, *grads):
         '''
         Accumulates cross-GPU gradients and routes them to the local model
-        grads: A tuple of gradients, one for each rank's output. Stack them into a
-        single tensor of shape [world_size, batch_size, dim]
+        grads: A tuple of gradients, one for each rank's output. Stack them 
+        into a single tensor of shape [world_size, batch_size, dim]
         '''
         all_gradients = torch.stack(grads)
         dist.all_reduce(all_gradients)   # Sum the gradients across all GPUs
@@ -39,35 +47,13 @@ def all_gather_with_grad(tensors):
     return torch.cat(gathered, dim=0)
 
 
-
-'''
-Loss class design without DDP
-
 class CLIPLoss(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.criterion = nn.CrossEntropyLoss()
-    
-    def forward(self, logits_image, logits_text):
-        """
-        logits_image: [Batch_size, Batch_size]
-        logits_text: [Batch_size, Batch_size]
-        """
-        batch_size = logits_image.shape[0]
-        device = logits_image.device
+    """
+    Symmetric cross-entropy loss (InfoNCE) over global image-text similarity
 
-        targets= torch.arange(batch_size, device=device)
-
-        loss_i = self.criterion(logits_image, targets)
-
-        loss_t = self.criterion(logits_text, targets)
-
-        total_loss = (loss_i + loss_t)/2
-        
-        return total_loss
-'''
-
-class CLIPLoss(nn.Module):
+    Each GPU computes local_batch to global_batch logits. Labels are offset by
+    rank * batch_size to index the correct diagonal position
+    """
     def __init__(self):
         super().__init__()
 
@@ -88,8 +74,3 @@ class CLIPLoss(nn.Module):
         loss_t = nn.functional.cross_entropy(logits_per_text, labels)
 
         return (loss_i + loss_t) / 2
-
-
-
-
-        

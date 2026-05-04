@@ -4,6 +4,9 @@ import torchvision.models as models
 import math
 
 class ImageEncoder(nn.Module):
+    """
+    Encode input images via pretrained ResNet Backbone + linear projection
+    """
     def __init__(self, backbone='resnet18', projection_dim=512):
         super().__init__()
         model_func = getattr(models, backbone)  # model.backbone
@@ -11,9 +14,8 @@ class ImageEncoder(nn.Module):
         feature_dim = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()  
         self.projection = nn.Linear(feature_dim, projection_dim)  
-        # 不需要对图片进行分类，因此将最后一个fc层替换为Identity层，保持原有特征维度
-        # 并且引入Identity可以解耦backbone和head
-        # 定义一个projection head，将原本最后一层的输入维度映射到peojection_dim
+        # Replace classification head with Identity to extract raw features, 
+        # then project to shared embedding space via a linear layer
 
     def forward(self, x):
         return self.projection(self.backbone(x))
@@ -21,6 +23,9 @@ class ImageEncoder(nn.Module):
     # out: (batch_size, projection_dim)
 
 class PatchEmbedding(nn.Module):
+    """
+    Split image into patches via Conv2d
+    """
     def __init__(self, image_size=224, patch_size=16, in_channels=3, embed_dim=768):
         super().__init__()
         self.num_patches = (image_size // patch_size) ** 2
@@ -39,8 +44,11 @@ class PatchEmbedding(nn.Module):
         return x
     
 class VisionTransformer(nn.Module):
+    """
+    Vision Transformer encoder (not used in current training config)
+    """
     def __init__(self, image_size=224, patch_size=16, embed_dim=768, 
-                 num_heads=12, num_layers=12, projection_dim=512):
+                 num_heads=12, num_layers=4, projection_dim=512):
         super().__init__()
         self.patch_embed = PatchEmbedding(image_size, patch_size, 3, embed_dim)
         num_patches = self.patch_embed.num_patches
@@ -61,21 +69,20 @@ class VisionTransformer(nn.Module):
 
         cls_token = self.clstoken.expand(B, -1, -1) # (B, 1, embed_dim)
 
-        x = torch.cat((cls_token, x), dim=1) # (B, num_patches+1, embed_dim)
+        x = torch.cat((cls_token, x), dim=1)        # (B, num_patches+1, embed_dim)
 
         x = x + self.pos_embed
         
         x = self.transformer(x)
 
-        cls_output = x[:, 0, :]  # (B, embed_dim)
+        cls_output = x[:, 0, :]                     # (B, embed_dim)
 
-        return self.projection(cls_output)  # (B, projection_dim)
-
-
-
-
+        return self.projection(cls_output)          # (B, projection_dim)
 
 class PositionEncoder(nn.Module):
+    """
+    Sinusoidal positional encoding
+    """
     def __init__(self, model_dim, max_len=5000):
         super().__init__()
         P = torch.zeros((1, max_len, model_dim))
@@ -91,18 +98,23 @@ class PositionEncoder(nn.Module):
     
     def forward(self, x):
         return self.P[:, :x.shape[1], :]
-        
-
+    
 
 class TextEncoder(nn.Module):
-    def __init__(self, vocab_size, max_len, model_dim=512, num_heads=8, num_layers=12, projection_dim=512):
+    """
+    Encode text via learned embeddings + Transformer + CLS pooling
+    """
+    def __init__(self, vocab_size, max_len, model_dim=512, num_heads=8, num_layers=2, projection_dim=512):
         super().__init__()
         # Token Embedding
         self.token_embedding = nn.Embedding(vocab_size, model_dim)
+        self.embed_dropout = nn.Dropout(0.1)
         # Position Encoding
         self.position_encode = PositionEncoder(model_dim, max_len)
         # Transformer
-        encoder_layer = nn.TransformerEncoderLayer(model_dim, num_heads, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(
+            model_dim, num_heads, batch_first=True, dropout=0.3
+            )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         # Projection
         self.projection = nn.Linear(model_dim, projection_dim)
@@ -110,7 +122,8 @@ class TextEncoder(nn.Module):
     def forward(self, input_ids, attention_mask):
         x = self.token_embedding(input_ids)
         # (batch_size, seq_len) -> (batch_size, seq_len, model_dim)
-        x = x + self.position_encode(x)  
+        x = x + self.position_encode(x) 
+        x = self.embed_dropout(x) 
         padding_mask = (attention_mask == 0)
         x = self.transformer(x, src_key_padding_mask=padding_mask)
         # (batch_size, seq_len, model_dim)
@@ -120,14 +133,15 @@ class TextEncoder(nn.Module):
         # (batch_size, projection_dim)
     
 
-
 class CLIP(nn.Module):
+    """
+    Dual-encoder CLIP model with learnable temperature (logit_scale)
+    """
     def __init__(self, vocab_size, max_len, projection_dim=512, init_temp=0.07):
         super().__init__()
-        self.image_encoder = VisionTransformer(projection_dim=projection_dim)
+        self.image_encoder = ImageEncoder(projection_dim=projection_dim)
         self.text_encoder = TextEncoder(vocab_size=vocab_size, max_len=max_len, projection_dim=projection_dim)
-        self.logit_scale = nn.Parameter(torch.log(torch.tensor(1 / 0.07)))
-        # self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        self.logit_scale = nn.Parameter(torch.log(torch.tensor(1 / init_temp)))
         # log ensure τ>0
 
     def forward(self, image, input_ids, attention_mask):
@@ -138,14 +152,3 @@ class CLIP(nn.Module):
         text_features = nn.functional.normalize(text_features, p=2, dim=1)
 
         return image_features, text_features
-
-
-
-
-
-
-
-
-
-
-

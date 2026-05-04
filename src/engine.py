@@ -1,15 +1,40 @@
+"""
+Training and Evaluation loops
+
+train_one_epoch: Standard DDP training with frozen backbone eval() mode
+evaluate: Accumulates embeddings across GPUs via all_gather, computes global 
+N to N similarity matrix and reports Recall@1/5/10.
+"""
+
 import torch
 from tqdm import tqdm
 import torch.distributed as dist
 
-def train_one_epoch(model, dataloader, optimizer, criterion, device):
+def train_one_epoch(model, dataloader, optimizer, criterion, device, total_steps=None):
+    """
+    Run one training epoch, returning average loss
+
+    Note: backbone.eval() is called after model.train() to freeze BatchNorm 
+    running statistics in the pretrained image encoder.
+    """
+
     model.train()
+
+    if hasattr(model, 'module'):
+        model.module.image_encoder.backbone.eval()
+    else:
+        model.image_encoder.backbone.eval()
+    
     total_loss = 0.0
-    pbar = tqdm(dataloader, desc="Training", leave=False)
+    is_main_process = dist.get_rank() == 0
+    pbar = tqdm(dataloader, desc="Training", leave=False, total=total_steps, disable=not is_main_process)
 
-    for batch in pbar:
+    total_samples = 0
+
+    for step, batch in enumerate(pbar):
+        if total_steps is not None and step >= total_steps:
+            break
         images, input_ids, attention_mask = batch
-
         images = images.to(device)
         input_ids = input_ids.to(device)
         attention_mask = attention_mask.to(device)
@@ -27,20 +52,32 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
         total_loss += loss.item() * images.shape[0]
 
         pbar.set_postfix({'loss': loss.item()})
+
+        total_samples += images.shape[0]
     
-    return total_loss / len(dataloader.dataset)
+    return total_loss / total_samples
 
 @torch.no_grad()
+def evaluate(model, dataloader, criterion, device, total_steps=None):
+    """
+    Evaluate model and compute Image-to-Text Recall@1/5/10
 
-def evaluate(model, dataloader, criterion, device):
+    All per-GPU embeddings are gathered via all_gather, then a global 
+    similarity matrix is used for ranking-based retrieval metrics
+    """
     model.eval()
     total_loss = 0.0
     all_image_features = []
     all_text_features = []
 
-    pbar = tqdm(dataloader, desc="Evaluation", leave=False)
+    is_main_process = dist.get_rank() == 0
+    pbar = tqdm(dataloader, desc="Evaluation", leave=False, total=total_steps, disable=not is_main_process)
 
-    for batch in pbar:
+    total_samples = 0
+    for step, batch in enumerate(pbar):
+        if total_steps is not None and step >= total_steps:
+            break
+        
         image, input_ids, attention_mask = batch
 
         image = image.to(device)
@@ -57,6 +94,8 @@ def evaluate(model, dataloader, criterion, device):
 
         all_image_features.append(image_embeddings)
         all_text_features.append(text_embeddings)
+
+        total_samples += image.shape[0]
 
         pbar.set_postfix({'val_loss': loss.item()})
 
@@ -86,5 +125,6 @@ def evaluate(model, dataloader, criterion, device):
 
     if dist.get_rank() == 0:
         print(f"I2T Recall@1: {recall_1:.4f}, Recall@5: {recall_5:.4f}, Recall@10: {recall_10:.4f}")
+
     
-    return total_loss / len(dataloader.dataset)
+    return total_loss / total_samples
