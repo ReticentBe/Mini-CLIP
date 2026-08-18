@@ -16,13 +16,13 @@ Unlike standard toy projects, this repository focuses on scalable engineering pr
 
 **Backbone Freezing**: ResNet backbone frozen (`requires_grad=False` + `eval()` mode for BatchNorm), preventing catastrophic forgetting from random text encoder gradients.
 
-**Multi-Caption Handling**: Each `.tar` sample contains 1 image (.jpg) + 1 JSON list of 5 captions; `random.choice()` at read time ensures no duplicate images in a batch.
+**Multi-Caption Handling**: Each `.tar` sample contains 1 image (`.jpg`) and a JSON list of 5 captions. The training pipeline selects one caption at read time.
 
 **Training Stability**: Data augmentation (RandomResizedCrop, ColorJitter, HorizontalFlip), Dropout (0.3), CosineAnnealingLR scheduler
 
 ## Result
 
-**Dataset**: Flickr8k (8091 images total, 5 train shards / 3 val shards, ~5000 train samples and ~500 val samples per epoch via WebDataset resampling)
+**Dataset**: Flickr8k (8091 images total, 9 shards, 6 train / 3 val, ~5000 train samples and ~500 val samples per epoch via WebDataset resampling)
 
 **Hardware**: 2x RTX 5090 via DDP on AutoDL
 
@@ -33,6 +33,11 @@ Unlike standard toy projects, this repository focuses on scalable engineering pr
 | Recall@1 | Recall@5 | Recall@10 |
 | -------- | -------- | --------- |
 | 19.5%    | 46.5%    | 58.6%     |
+
+Two caveats on these numbers:
+
+1. Each image is paired with 1 randomly sampled caption, not the standard 5-caption Flickr8k protocol (hit if any of the 5 is retrieved). So they are not directly comparable to published Flickr8k results, and are stricter.
+2. The validation stream is resampled with replacement, so duplicate images can systematically deflate the score (see Lesson 5). Treat this as a non-standard, likely conservative diagnostic rather than a benchmark-comparable Flickr8k result.
 
 ### Inference Demo (Hard Negatives)
 
@@ -127,11 +132,23 @@ Solution: use `resampled=True` for both splits with explicit step counts.
 
 4. `num_workers` > `num_shards`: WebDataset assigns shards to workers, so if workers is more than shards, empty workers crash with `ValueError: No samples found`. 
 
-Solution: ensure `num_workers` is less than `num_tar_files/world_size`.
+Solution: ensure `num_workers` is less than `num_tar_files/world_size`. With `resampled=True` this limit does not apply: every worker resamples from the full shard list, so no worker is left empty.
 
 5. Validation Set Duplication in Streaming Pipelines: WebDataset with `resampled=True` draws samples with replacement. For training this is harmless for batch computing loss independently and discards it. But for Recall@K evaluation, all batch embeddings are concatenated into a single $N\times N$ similarity matrix. Duplicate images occupy top-K positions. Since the evaluation script treats them as incorrect, the Recall score is severely underestimated.
 
 Solution: increase the number of validation shards relative to `VAL_SAMPLES` to minimize the duplication rate or use `resampled=False` with proper padding to avoid deadlocks.
+
+## Known Limitations
+
+These are known issues in the released code. They are kept as-is so the code stays consistent with the released checkpoint, instead of being "fixed" into something the checkpoint was never trained with:
+
+1. `logit_scale` is not clamped. Original CLIP clamps it at 100 to keep the temperature from exploding.
+
+2. Evaluation resizes images to 224x224 directly, which distorts the aspect ratio. Resize + CenterCrop would match the training crop distribution better.
+
+3. The vocabulary is built from all captions, including the validation split. Harmless for retrieval here, but a cleaner split would build it from training captions only.
+
+4. Recall@K uses a resampled validation stream with duplicates (Lesson 5) and a random caption per image, so the evaluation is not deterministic across runs.
 
 ## Roadmap
 
